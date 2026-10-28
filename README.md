@@ -12,8 +12,8 @@
 
 每 2 秒左右用系统自带工具采样三项指标（零依赖，不需要装任何东西）：
 
-- CPU 占用率 — `top`
-- CPU die 温度 + 风扇转速 — `powermetrics --samplers smc`
+- CPU 占用率 — Mach `host_processor_info` 系统调用（微秒级，无子进程）
+- CPU die 温度 + 风扇转速 — `powermetrics --samplers smc`，每 10 秒采一次并缓存
 
 状态机：
 
@@ -83,7 +83,7 @@ tail -f /var/log/mac_not_jet.log
 
 ### 说明与限制
 
-- 需要 root：读 SMC 传感器、改电源设置都要求权限。脚本只调用 `top`、`powermetrics`、`pmset` 三条命令，约 200 行，无任何依赖，可自行审计。
+- 需要 root：读 SMC 传感器、改电源设置都要求权限。CPU 采样走 Mach 系统调用、温度风扇走 `powermetrics`、切模式走 `pmset`，约 200 行，无任何依赖，可自行审计。守护进程自身占用趋近 0%。
 - 风扇读数：部分机型 `powermetrics` 不报风扇，此时风扇条件自动跳过（CPU + 温度双条件兜底触发）。
 - Intel Mac 理论可用，但阈值是在 Apple Silicon 上调的。
 - 守护进程退出时**有意不**恢复低电量模式——机器保持在当前状态，不做多余动作。
@@ -100,8 +100,9 @@ If you own a MacBook Pro but work like it's an Air (light tasks, hate fan noise,
 
 Every ~2 seconds it samples three signals via built-in macOS tools (zero dependencies):
 
-- CPU usage — `top`
-- CPU die temperature + fan RPM — `powermetrics --samplers smc`
+- CPU usage — Mach `host_processor_info` syscall (microseconds, no subprocess)
+- CPU die temperature + fan RPM — `powermetrics --samplers smc`, sampled every
+  10 s and cached
 
 State machine:
 
@@ -178,8 +179,9 @@ After editing, reinstall (`sudo ./install.sh` copies the script) to apply.
 ### Notes & limitations
 
 - Needs root: reading SMC sensors and changing power settings both require it.
-  The script only calls `top`, `powermetrics` and `pmset` — read it, it's ~200
-  lines with no dependencies.
+  CPU usage comes from the Mach `host_processor_info` syscall, temperature/fan
+  from `powermetrics`, switching from `pmset` — ~200 lines, no dependencies.
+  The daemon's own footprint stays near 0%.
 - Fan readings: if `powermetrics` doesn't report fans on your model, the fan
   condition is skipped (CPU + temperature alone trigger the switch).
 - Intel Macs: works in principle, but thresholds were tuned on Apple Silicon.

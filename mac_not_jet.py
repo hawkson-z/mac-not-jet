@@ -12,10 +12,16 @@ mac-not-jet — MacBook Pro 过热自动切低电量模式
   温度 <= TEMP_RECOVER 且 CPU 占用 <= CPU_RECOVER
   恢复前会读当前实际状态，若用户已手动退出低电量模式则不动 pmset。
 
+采样策略（把守护进程自身开销压到接近零）:
+  CPU 占用率: Mach host_processor_info 系统调用，微秒级，无子进程
+  温度/风扇:  powermetrics 每 SMC_INTERVAL 秒调用一次并缓存
+             （温度变化慢，10s 精度对 10s 触发窗口足够）
+
 用法:
   sudo python3 mac_not_jet.py          # 前台运行（调试用）
   sudo python3 mac_not_jet.py --once   # 采样一次并打印读数，不执行任何切换
 """
+import ctypes
 import re
 import subprocess
 import sys
@@ -33,8 +39,8 @@ CPU_RECOVER = 50.0       # 恢复 CPU 占用阈值 (%)
 RECOVER_SUSTAIN = 30     # 恢复条件需持续秒数
 MIN_HOLD = 600           # 切换后最短保持秒数（防反复横跳）
 
-TICK = 2                 # 采样循环睡眠秒数（top -l 2 + powermetrics 本身约耗 4~7s，
-                         # 实际循环节拍 ≈ TICK + 采样耗时；计时均按墙钟，不受影响）
+TICK = 2                 # 主循环间隔秒数
+SMC_INTERVAL = 10        # 温度/风扇采样间隔秒数（powermetrics 调用有开销，低频即可）
 HEARTBEAT = 600          # 心跳日志间隔秒数
 WARN_INTERVAL = 600      # 读数失败告警的最小间隔（防日志膨胀）
 LPM_CHECK_INTERVAL = 60  # lpm 状态下核对实际低电量模式开关的间隔秒数
@@ -44,22 +50,65 @@ def log(msg):
     print("%s %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg), flush=True)
 
 
-def read_cpu_usage():
-    """返回近几秒 CPU 总占用率（100 - idle）。top -l 2 的第二段才是即时采样。"""
-    try:
-        out = subprocess.run(
-            ["top", "-l", "2", "-n", "0"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout
-    except Exception as e:
-        log("top 采样失败: %s" % e)
-        return None
-    lines = [l for l in out.splitlines() if l.startswith("CPU usage:")]
-    if len(lines) < 2:
-        return None
-    m = re.search(r"([\d.]+)% idle", lines[-1])
-    return 100.0 - float(m.group(1)) if m else None
+# ---------- CPU 占用率：Mach host_processor_info，零子进程 ----------
 
+_libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+_libc.host_processor_info.argtypes = [
+    ctypes.c_uint,                                # host_t
+    ctypes.c_int,                                 # flavor (PROCESSOR_CPU_LOAD_INFO=2)
+    ctypes.POINTER(ctypes.c_uint),                # out: cpu count
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_int)), # out: ticks
+    ctypes.POINTER(ctypes.c_uint),                # out: tick count
+]
+_libc.host_processor_info.restype = ctypes.c_int
+_libc.vm_deallocate.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
+
+_last_ticks = None
+
+
+def _read_ticks():
+    """全核累计 (user, system, idle, nice)，读不到返回 None"""
+    cpu_count = ctypes.c_uint()
+    info = ctypes.POINTER(ctypes.c_int)()
+    info_count = ctypes.c_uint()
+    kr = _libc.host_processor_info(
+        _libc.mach_host_self(), 2,
+        ctypes.byref(cpu_count), ctypes.byref(info), ctypes.byref(info_count))
+    if kr != 0:
+        return None
+    n = cpu_count.value
+    u = s = idle = nice = 0
+    for i in range(n):
+        base = i * 4  # 每核顺序: user, system, idle, nice
+        u += info[base]
+        s += info[base + 1]
+        idle += info[base + 2]
+        nice += info[base + 3]
+    _libc.vm_deallocate(_libc.mach_host_self(),
+                        ctypes.addressof(info.contents),
+                        info_count.value * ctypes.sizeof(ctypes.c_int))
+    return (u, s, idle, nice)
+
+
+def read_cpu_usage():
+    """返回上次调用至今的 CPU 总占用率（忙/总）。首次调用返回 None。"""
+    global _last_ticks
+    ticks = _read_ticks()
+    if ticks is None:
+        return None
+    if _last_ticks is None:
+        _last_ticks = ticks
+        return None
+    delta = [t - l for t, l in zip(ticks, _last_ticks)]
+    _last_ticks = ticks
+    busy = delta[0] + delta[1] + delta[3]   # user + system + nice
+    total = busy + delta[2]                 # + idle
+    if total <= 0:
+        return None
+    return 100.0 * busy / total
+
+
+# ---------- 温度/风扇：powermetrics 低频采样 + 缓存 ----------
 
 def read_smc():
     """读 CPU die 温度和风扇转速（取最大风扇）。powermetrics 需要 root。"""
@@ -68,8 +117,7 @@ def read_smc():
             ["powermetrics", "--samplers", "smc", "-i", "1000", "-n", "1"],
             capture_output=True, text=True, timeout=20,
         ).stdout
-    except Exception as e:
-        log("powermetrics 采样失败: %s" % e)
+    except Exception:
         return None, None
     temp = None
     m = re.search(r"CPU die temperature:\s*([\d.]+)\s*C", out)
@@ -84,6 +132,23 @@ def read_smc():
     fan = max(fans) if fans else None
     return temp, fan
 
+
+_smc_cache = {"temp": None, "fan": None, "ts": 0.0}
+
+
+def read_smc_cached():
+    """温度/风扇低频采样。缓存期内直接返回；失败最多每 SMC_INTERVAL 重试一次。"""
+    now = time.time()
+    if now - _smc_cache["ts"] < SMC_INTERVAL:
+        return _smc_cache["temp"], _smc_cache["fan"]
+    temp, fan = read_smc()
+    if temp is not None:
+        _smc_cache["temp"], _smc_cache["fan"] = temp, fan
+    _smc_cache["ts"] = now
+    return _smc_cache["temp"], _smc_cache["fan"]
+
+
+# ---------- pmset ----------
 
 def set_lpm(on):
     subprocess.run(["pmset", "-a", "lowpowermode", "1" if on else "0"], check=False)
@@ -140,7 +205,7 @@ def main():
         t0 = time.time()
         try:
             cpu = read_cpu_usage()
-            temp, fan = read_smc()
+            temp, fan = read_smc_cached()
         except Exception as e:
             log("采样异常: %s" % e)
             time.sleep(TICK)
@@ -219,7 +284,6 @@ def main():
             log("心跳: 状态=%s cpu=%s temp=%s fan=%s" % (
                 state, fmt(cpu, "%"), fmt(temp, "°C"), fmt(fan, "rpm")))
 
-        # 采样本身耗时 2~4s，按剩余时间睡
         elapsed = time.time() - t0
         if elapsed < TICK:
             time.sleep(TICK - elapsed)
