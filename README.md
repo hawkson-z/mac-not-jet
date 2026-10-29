@@ -30,10 +30,12 @@
 | 停转 | 0 rpm |
 | 最低转速 | ~2317 rpm（2500 rpm 上下，安静环境基本听不到） |
 | 最高转速 | ~6550 rpm |
-| 触发线（默认） | 3000 rpm |
+| 触发线（默认） | 4000 rpm |
+
+噪声实测（14 寸 MacBook Pro M5，Notebookcheck）：2500 rpm ≈ 25 dB(A) 基本听不到，3800 rpm ≈ 30 dB(A) 已经能明确听见，5150 rpm ≈ 41 dB(A)，6550 rpm ≈ 48 dB(A)。所以触发线定在 4000——开始觉得吵了才动手，不去赌听不见的区间。
 
 ```
-        风扇 >= 3000 rpm（持续 5 秒）
+        风扇 >= 4000 rpm（持续 5 秒）
 正常 ───────────────────────────────► 低电量模式
   ▲                                     │
   └── 风扇 <= 2500 rpm 且 CPU <= 50% ───┘
@@ -96,7 +98,7 @@ tail -f /var/log/mac_not_jet.log
 触发时会有这样一行：
 
 ```
-★ 风扇持续 5s 在 3245 rpm（92.1°C），切换低电量模式
+★ 风扇持续 5s 在 4210 rpm（92.1°C），切换低电量模式
 ```
 
 ### 调参数
@@ -105,7 +107,7 @@ tail -f /var/log/mac_not_jet.log
 
 | 常量 | 默认值 | 含义 |
 |---|---|---|
-| `FAN_TRIGGER` | 3000 rpm | 触发转速。**这是唯一需要按自己机器调整的值** |
+| `FAN_TRIGGER` | 4000 rpm | 触发转速。**这是唯一需要按自己机器调整的值** |
 | `FAN_RECOVER` | 2500 rpm | 恢复转速，应设为「听起来已经安静」的档位 |
 | `CPU_RECOVER` | 50 % | 恢复所需 CPU 占用上限（防止刚恢复又热起来） |
 | `TRIGGER_SUSTAIN` | 5 s | 风扇需在该转速以上持续多久才动手 |
@@ -113,7 +115,7 @@ tail -f /var/log/mac_not_jet.log
 | `MIN_HOLD` | 600 s | 低电量模式最短保持时间 |
 | `TICK` | 5 s | 采样间隔 |
 
-**`FAN_TRIGGER` 怎么定**：跑一次 `./scripts/stress.sh 180`，同时用另一终端 `watch -n2 "python3 mac_not_jet.py --once | head -1"` 观察转速，听声音——记住「开始觉得吵」的那个转速，填进去。默认 3000 是在一台 14 寸 MacBook Pro 上按「2500 rpm 听不到、3000 以上开始有感觉」调的。
+**`FAN_TRIGGER` 怎么定**：跑一次 `./scripts/stress.sh 180`，同时用另一终端 `watch -n2 "python3 mac_not_jet.py --once | head -1"` 观察转速，听声音——记住「开始觉得吵」的那个转速，填进去。默认 4000 是按 14 寸 M5 的噪声实测定的：3800 rpm 约 30 dB(A) 已能明确听见，4000 稍高于这条线。
 
 改完重装一次（`sudo ./install.sh` 会拷贝脚本）即可生效。
 
@@ -160,10 +162,15 @@ Fan speed is the only signal that maps directly to what you hear. The fan sits a
 | Stopped | 0 rpm |
 | Minimum | ~2317 rpm (around 2500 rpm, inaudible in a quiet room) |
 | Maximum | ~6550 rpm |
-| Trigger (default) | 3000 rpm |
+| Trigger (default) | 4000 rpm |
+
+Measured noise (14" MacBook Pro M5, Notebookcheck): 2500 rpm ≈ 25 dB(A) is
+inaudible, 3800 rpm ≈ 30 dB(A) is already clearly audible, 5150 rpm ≈ 41 dB(A),
+6550 rpm ≈ 48 dB(A). Hence 4000 — act once it actually bothers you, instead of
+throttling through ranges you can't hear.
 
 ```
-        fan >= 3000 rpm (sustained 5 s)
+        fan >= 4000 rpm (sustained 5 s)
 NORMAL ────────────────────────────────► LOW POWER
    ▲                                       │
    └── fan <= 2500 rpm AND CPU <= 50% ─────┘
@@ -236,7 +243,7 @@ tail -f /var/log/mac_not_jet.log
 A trigger looks like this:
 
 ```
-★ 风扇持续 5s 在 3245 rpm（92.1°C），切换低电量模式
+★ 风扇持续 5s 在 4210 rpm（92.1°C），切换低电量模式
 ```
 
 ### Tune it
@@ -245,7 +252,7 @@ Edit the constants at the top of `mac_not_jet.py`:
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `FAN_TRIGGER` | 3000 rpm | Trigger speed. **The only value you need to tune per machine** |
+| `FAN_TRIGGER` | 4000 rpm | Trigger speed. **The only value you need to tune per machine** |
 | `FAN_RECOVER` | 2500 rpm | Recovery speed; set it to where it already sounds quiet |
 | `CPU_RECOVER` | 50 % | CPU ceiling for recovery (stops it recovering straight back into heat) |
 | `TRIGGER_SUSTAIN` | 5 s | How long the fan must stay above the trigger speed |
@@ -256,8 +263,8 @@ Edit the constants at the top of `mac_not_jet.py`:
 **How to pick `FAN_TRIGGER`**: run `./scripts/stress.sh 180` and, in another
 terminal, `watch -n2 "python3 mac_not_jet.py --once | head -1"` while listening.
 Note the speed at which the noise starts to bother you and use that. The default
-3000 comes from a 14" MacBook Pro where 2500 rpm is inaudible and 3000+ is
-noticeable.
+4000 follows the measured noise curve of a 14" M5: 3800 rpm ≈ 30 dB(A) is clearly
+audible, and 4000 sits just above that line.
 
 After editing, reinstall (`sudo ./install.sh` copies the script) to apply.
 

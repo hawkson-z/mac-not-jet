@@ -49,8 +49,9 @@ from datetime import datetime
 VERSION = "0.3.0"
 
 # ===== 可调参数 =====
-FAN_TRIGGER = 3000.0          # 触发转速 (rpm)。实测 2500 rpm 在安静环境里听不到，
-                              # 所以以 3000 作为「开始有声音」的线
+FAN_TRIGGER = 4000.0          # 触发转速 (rpm)。实测噪声（14 寸 M5）：2500 rpm ≈ 25 dB(A)
+                              # 基本听不到，3800 rpm ≈ 30 dB(A) 已能明确听见。定 4000 是
+                              # 宁可晚动手也不白降频：开始觉得吵了才切
 FAN_RECOVER = 2500.0          # 恢复转速 (rpm)。这台机器的风扇最低转速约 2317，
                               # 触发降频后不会停转、只会回落到最低档，故用「回落」而非「停转」判恢复
 
@@ -375,7 +376,6 @@ def sample_once():
     temp, count = read_temps()
     lpm = get_lpm()
 
-    print("mac-not-jet v%s" % VERSION)
     print("风扇转速: %s（最低 %s / 最高 %s）" % (
         fmt(fan, " rpm", 0), fmt(fan_min, " rpm", 0), fmt(fan_max, " rpm", 0)))
     print("CPU 温度: %s（%d 个传感器）" % (fmt(temp, "°C"), count))
@@ -383,6 +383,8 @@ def sample_once():
     print("当前低电量模式: %s" % lpm)
     print("触发条件: 风扇 >= %.0f rpm 持续 %ds；恢复: 风扇 <= %.0f rpm 且 CPU <= %.0f%% 持续 %ds"
           % (FAN_TRIGGER, TRIGGER_SUSTAIN, FAN_RECOVER, CPU_RECOVER, RECOVER_SUSTAIN))
+    # 版本放在最后一行：前面几行是数据，按行取值的东西（如 README 里的 head -1）不该被它挤掉
+    print("版本: mac-not-jet v%s" % VERSION)
     if fan is None:
         print("⚠ 风扇转速读不到：本工具无法工作（SMC key F0Ac 不可用）")
         return 1
