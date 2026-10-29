@@ -4,6 +4,8 @@
 
 买的是 Pro、用得像 Air（日常轻载、烦风扇噪音、不需要峰值性能）的人，就是它的目标用户。
 
+> **当前 v0.3.0，试验阶段。** 「风扇吵起来 → 降频 → 安静 → 自动恢复」这一整轮还没有在真机上跑通验证，所以版本号停在 0.x。实测确认有效之后才标成 v1.0.0。
+
 ---
 
 ## 中文
@@ -130,6 +132,8 @@ tail -f /var/log/mac_not_jet.log
 **Don't let your Mac be a jet.** A tiny daemon for Apple Silicon MacBooks: when the fan spins up past a threshold for a few seconds, switch to **Low Power Mode** (the CPU throttles, the temperature drops, the fan goes quiet); switch back once it's quiet again.
 
 If you own a MacBook Pro but work like it's an Air (light tasks, hate fan noise, don't need peak performance), this is for you.
+
+> **v0.3.0, experimental.** The full cycle — fan spins up, throttles, goes quiet, recovers — has not been verified end to end on real hardware yet, hence the 0.x version. It becomes v1.0.0 only once that actually works.
 
 ### How it works
 
@@ -267,12 +271,13 @@ After editing, reinstall (`sudo ./install.sh` copies the script) to apply.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md). Short version: v1.0, v2.0 and v2.1 all failed
-to trigger on Apple Silicon for different reasons (a sampler that no longer
-exists; then a level vocabulary `powermetrics` never emits; then a thermal
-pressure signal the OS barely moves). v3.0 goes back to a physical quantity —
+See [CHANGELOG.md](CHANGELOG.md). Short version: v0.1.0, v0.2.0 and v0.2.1 all
+failed to trigger on Apple Silicon for different reasons (a sampler that no
+longer exists; then a level vocabulary `powermetrics` never emits; then a thermal
+pressure signal the OS barely moves). v0.3.0 goes back to a physical quantity —
 fan RPM read straight from the SMC — which is also the thing that actually makes
-noise.
+noise. It is still 0.x: no version has yet been verified through a full
+loud → throttle → quiet → recover cycle on real hardware.
 
 ---
 

@@ -28,11 +28,15 @@ mac-not-jet — 风扇一转，就把 CPU 按下去
   python3 mac_not_jet.py --once        # 采样一次并打印读数（读取不需要 root）
 
 版本历史:
-  v1.0  用 powermetrics --samplers smc 读温度/风扇 —— Apple Silicon 上该 sampler 已不存在
-  v2.0  改用系统热压力等级（powermetrics --samplers thermal）
-  v2.1  热压力改走 notify API 拿数值，避开 powermetrics 的词表
-  v3.0  回到物理量：直接经 IOKit 读 SMC 的风扇转速，以「风扇转动」为唯一触发信号。
-        热压力路线整体废弃（实测满载时仍为 Nominal，永远不触发）。
+  v0.1.0  用 powermetrics --samplers smc 读温度/风扇 —— Apple Silicon 上该 sampler 已不存在
+  v0.2.0  改用系统热压力等级（powermetrics --samplers thermal）
+  v0.2.1  热压力改走 notify API 拿数值，避开 powermetrics 的词表
+  v0.3.0  回到物理量：直接经 IOKit 读 SMC 的风扇转速，以「风扇转动」为唯一触发信号。
+          热压力路线整体废弃（实测满载时仍为 Nominal，永远不触发）。
+
+版本号约定:
+  在真机上跑通完整一轮「吵起来 → 降频 → 安静 → 恢复」并确认有效之前，只发 0.x。
+  第一个通过实测验证的版本才叫 v1.0.0，不要提前跳号。
 """
 import ctypes
 import re
@@ -41,6 +45,8 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+
+VERSION = "0.3.0"
 
 # ===== 可调参数 =====
 FAN_TRIGGER = 3000.0          # 触发转速 (rpm)。实测 2500 rpm 在安静环境里听不到，
@@ -369,6 +375,7 @@ def sample_once():
     temp, count = read_temps()
     lpm = get_lpm()
 
+    print("mac-not-jet v%s" % VERSION)
     print("风扇转速: %s（最低 %s / 最高 %s）" % (
         fmt(fan, " rpm", 0), fmt(fan_min, " rpm", 0), fmt(fan_max, " rpm", 0)))
     print("CPU 温度: %s（%d 个传感器）" % (fmt(temp, "°C"), count))
@@ -402,9 +409,9 @@ def main():
         return 1
     fan_min, fan_max = read_fan_limits()
     temp, count = read_temps()
-    log("启动。触发: 风扇 >= %.0f rpm 持续 %ds；恢复: 风扇 <= %.0f rpm 且 CPU <= %.0f%% "
+    log("启动 mac-not-jet v%s。触发: 风扇 >= %.0f rpm 持续 %ds；恢复: 风扇 <= %.0f rpm 且 CPU <= %.0f%% "
         "持续 %ds（最短保持 %ds）；采样间隔 %ds" % (
-            FAN_TRIGGER, TRIGGER_SUSTAIN, FAN_RECOVER, CPU_RECOVER,
+            VERSION, FAN_TRIGGER, TRIGGER_SUSTAIN, FAN_RECOVER, CPU_RECOVER,
             RECOVER_SUSTAIN, MIN_HOLD, TICK))
     log("启动自检通过：风扇 %s（最低 %s / 最高 %s），温度 %s（%d 个传感器）" % (
         fmt(fan, " rpm", 0), fmt(fan_min, " rpm", 0), fmt(fan_max, " rpm", 0),

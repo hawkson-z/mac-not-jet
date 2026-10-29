@@ -1,17 +1,21 @@
 # Changelog
 
-## v3.0 — 2026-10-29
+版本号约定：在真机上跑通完整一轮「吵起来 → 降频 → 安静 → 恢复」并确认有效之前，
+只发 `0.x`。中间每次改动递增小版本（修 bug 用第三位）。第一个实测有效的版本
+才叫 `v1.0.0`。
+
+## v0.3.0 — 2026-10-29
 
 ### 触发信号换回物理量：风扇转速
 
-v2.1 的技术实现没问题，但选错了信号。实测证据（10 核全部满载，`yes` × 16）：
+v0.2.1 的技术实现没问题，但选错了信号。实测证据（10 核全部满载，`yes` × 16）：
 
 ```
 09:54:54 心跳: 状态=normal cpu=99.8% 压力=Nominal
 ```
 
 CPU 99.8%、结温 90°C，系统热压力仍然是 `Nominal(0)`。也就是说这条触发线在
-真机上永远够不到——**v2.1 从装上到被换掉，一次都没触发过**。macOS 在 Apple
+真机上永远够不到——**v0.2.1 从装上到被换掉，一次都没触发过**。macOS 在 Apple
 Silicon 上对热压力的判定极其迟钝，等它升到 `Moderate`，风扇早已全速运转。
 
 同时确认了另一个事实：`powermetrics --samplers smc` 虽然被移除，但 **SMC 本身
@@ -56,11 +60,11 @@ IOConnectCallStructMethod(conn, 2, &in, size, &out, &outSize)   # KERNEL_INDEX_S
 
 ---
 
-## v2.1 — 2026-10-29
+## v0.2.1 — 2026-10-29
 
-### 修掉一个让 v2.0 同样失效的 bug
+### 修掉一个让 v0.2.0 同样失效的 bug
 
-v2.0 用 `powermetrics --samplers thermal` 读热压力，再按
+v0.2.0 用 `powermetrics --samplers thermal` 读热压力，再按
 `Nominal / Elevated / High / Serious / Critical` 这套名字解析。但这套名字
 **powermetrics 根本不会输出**——它输出的是
 `Nominal / Moderate / Heavy / Sleeping / Trapping / Undefined`
@@ -68,7 +72,7 @@ v2.0 用 `powermetrics --samplers thermal` 读热压力，再按
 
 结果是：空闲时输出 `Nominal` 恰好命中，看起来一切正常；一旦真的热起来，
 输出 `Moderate` 或 `Heavy`，解析失败返回 `None`，主循环走 fail-safe
-「不触发」——**和 v1.0 一样永远不会切**。
+「不触发」——**和 v0.1.0 一样永远不会切**。
 
 ### 改法：不再解析名字，直接读数值
 
@@ -81,7 +85,7 @@ lib.notify_get_state(token, byref(state))   # → 0 / 10 / 20 / 30 / 40 / 50
 
 带来三个顺带好处：
 
-| | v2.0 | v2.1 |
+| | v0.2.0 | v0.2.1 |
 |---|---|---|
 | 子进程 | 每 10 秒 spawn 一次 `powermetrics` | 无 |
 | 需要 root | 是 | 否（守护进程仍是 root，但读取本身不需要） |
@@ -107,29 +111,29 @@ lib.notify_get_state(token, byref(state))   # → 0 / 10 / 20 / 30 / 40 / 50
 
 ---
 
-## v2.0 — 2026-10-28
+## v0.2.0 — 2026-10-28
 
 `powermetrics --samplers smc` 在 Apple Silicon 上已不存在（`unrecognized
-sampler: smc`），温度与风扇读数恒为 `None`，v1.0 从装上起就是空壳。改用系统
+sampler: smc`），温度与风扇读数恒为 `None`，v0.1.0 从装上起就是空壳。改用系统
 热压力等级作为触发信号。
 
 - 删除 `TEMP_TRIGGER` / `TEMP_RECOVER` / `FAN_TRIGGER` 与温度、风扇读取代码
 - 触发条件从三条件（CPU + 温度 + 风扇）简化为两条件（CPU + 热压力）
 - `TRIGGER_SUSTAIN` 10s → 30s
 
-**遗留问题**：等级名解析错误（见 v2.1），实际仍然无法触发。
+**遗留问题**：等级名解析错误（见 v0.2.1），实际仍然无法触发。
 
 ---
 
-## ~~v2.0 热压力等级对照~~（已废弃）
+## ~~v0.2.0 热压力等级对照~~（已废弃）
 
-v2.0 曾给出下面这张表，其中的等级名在 powermetrics 输出里并不存在，已作废。
-真实等级见 v2.1 说明：`Nominal 0 / Light 10 / Moderate 20 / Heavy 30 /
+v0.2.0 曾给出下面这张表，其中的等级名在 powermetrics 输出里并不存在，已作废。
+真实等级见 v0.2.1 说明：`Nominal 0 / Light 10 / Moderate 20 / Heavy 30 /
 Trapping 40 / Sleeping 50`。
 
 ---
 
-## v1.0 — 2026-10-28
+## v0.1.0 — 2026-10-28
 
 首个版本。CPU 占用（Mach `host_processor_info`）+ 温度/风扇
 （`powermetrics --samplers smc`）三条件触发，切换低电量模式，带回滞与最短
