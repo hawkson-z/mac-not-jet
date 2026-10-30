@@ -3,7 +3,6 @@
 **不要让你的 Mac 起飞。** 一个极小的 macOS 守护进程：风扇转速升到设定值且持续几秒，就自动切到**低电量模式**（CPU 降频、温度回落、风扇安静）；安静下来之后再自动切回。
 
 买的是 Pro、用得像 Air（日常轻载、烦风扇噪音、不需要峰值性能）的人，就是它的目标用户。
-
 ---
 
 ## 中文
@@ -122,6 +121,8 @@ tail -f /var/log/mac_not_jet.log
 - 只有改电源设置需要 root。读风扇、读温度、读 CPU 全都不需要；`--once` 可以直接以普通用户运行。
 - 不依赖 `powermetrics`：它的 `smc` sampler 在 Apple Silicon 上已被移除，本工具直接走 IOKit 读 SMC，不受影响。守护进程自身占用趋近 0%（每 5 秒两次系统调用）。
 - 温度 key 列表按 Apple Silicon 各代（M1–M5）列了一遍，读不到的自动跳过。Intel Mac 的风扇也能读，但温度 key 不同，未适配。
+- 双风扇机型（16 寸 MBP）两把风扇（F0Ac/F1Ac）都读，按较吵的那把判断；单风扇机型读不到 F1Ac 会自动跳过。
+- 你手动关掉低电量模式后，守护进程 30 分钟内不会自动再开（避免和你的手动操作打架）；反过来，它也不会关掉不是自己开的低电量模式。
 - 阈值是按「风扇声音」而不是「温度」定的，每台机器散热曲线不同，务必按上面的方法自己调一次。
 - 守护进程退出时**有意不**恢复低电量模式——机器保持在当前状态，不做多余动作。
 
@@ -269,6 +270,8 @@ After editing, reinstall (`sudo ./install.sh` copies the script) to apply.
 - Only changing the power setting needs root. Fan, temperature and CPU reads don't; `--once` runs fine as a normal user.
 - No `powermetrics` dependency: its `smc` sampler was removed on Apple Silicon, and this reads the SMC through IOKit directly. The daemon's own footprint stays near 0% (two syscalls every 5 seconds).
 - The temperature key list covers Apple Silicon generations M1–M5 (unreadable keys are skipped). Intel fans can be read too, but the temperature keys differ and aren't mapped.
+- Dual-fan machines (16" MBP) read both fans (F0Ac/F1Ac) and judge by the louder one; single-fan machines simply skip the missing key.
+- If you turn Low Power Mode off manually, the daemon won't turn it back on for 30 minutes (no fighting your manual change). Conversely, it never turns off a Low Power Mode it didn't switch on itself.
 - Thresholds are derived from *fan noise*, not temperature; cooling curves differ per machine, so tune it once as described above.
 - The daemon intentionally does **not** restore Low Power Mode on exit — it leaves the machine in its current state.
 

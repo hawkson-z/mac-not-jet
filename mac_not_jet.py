@@ -33,6 +33,8 @@ mac-not-jet — 风扇一转，就把 CPU 按下去
   v0.2.1  热压力改走 notify API 拿数值，避开 powermetrics 的词表
   v0.3.0  回到物理量：直接经 IOKit 读 SMC 的风扇转速，以「风扇转动」为唯一触发信号。
           热压力路线整体废弃（实测满载时仍为 Nominal，永远不触发）。
+  v0.3.1  修缺陷：SMC 连接失效后自动重连（睡眠唤醒场景）、恢复分支把读数失败
+          误当「用户已手动关闭」、与用户手动开关低电量模式打架、双风扇机型支持。
 
 版本号约定:
   在真机上跑通完整一轮「吵起来 → 降频 → 安静 → 恢复」并确认有效之前，只发 0.x。
@@ -46,7 +48,7 @@ import sys
 import time
 from datetime import datetime
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 # ===== 可调参数 =====
 FAN_TRIGGER = 4000.0          # 触发转速 (rpm)。实测噪声（14 寸 M5）：2500 rpm ≈ 25 dB(A)
@@ -61,6 +63,7 @@ TRIGGER_SUSTAIN = 5           # 触发需持续秒数（约 1 个采样周期，
 RECOVER_SUSTAIN = 60          # 恢复需持续秒数
 MIN_HOLD = 600                # 切换后最短保持秒数（防反复横跳）
 LPM_FAIL_BACKOFF = 60         # pmset 切换失败后的重试退避（防日志刷屏）
+MANUAL_OVERRIDE_S = 1800      # 用户手动关闭低电量模式后，这段时间内不自动切换（尊重用户操作）
 
 TICK = 5                      # 主循环间隔秒数
 HEARTBEAT = 600               # 心跳日志间隔秒数（心跳时才扫描温度）
@@ -227,40 +230,56 @@ class SMC:
         return self._open()
 
     def read(self, key):
-        """返回 (dataType, bytes) ；失败返回 None"""
-        if not self.conn and not self._open():
-            return None
-        # 第一步：取 key 的信息（长度、类型）
-        inp = _SMCKeyData()
-        out = _SMCKeyData()
-        inp.key = _fourcc(key)
-        inp.data8 = _CMD_READ_KEYINFO
-        out_sz = ctypes.c_size_t(ctypes.sizeof(out))
-        kr = _iokit.IOConnectCallStructMethod(
-            self.conn, _KERNEL_INDEX_SMC,
-            ctypes.byref(inp), ctypes.sizeof(inp),
-            ctypes.byref(out), ctypes.byref(out_sz))
-        if kr != 0 or out.result != 0:
-            return None
-        size = out.keyInfo.dataSize
-        if not 1 <= size <= 32:
-            return None
-        dtype = out.keyInfo.dataType.to_bytes(4, "big").decode("ascii", "replace")
+        """返回 (dataType, bytes)；key 不存在或读失败返回 None。
 
-        # 第二步：读数据
-        inp2 = _SMCKeyData()
-        out2 = _SMCKeyData()
-        inp2.key = _fourcc(key)
-        inp2.keyInfo.dataSize = size
-        inp2.data8 = _CMD_READ_BYTES
-        out_sz2 = ctypes.c_size_t(ctypes.sizeof(out2))
-        kr = _iokit.IOConnectCallStructMethod(
-            self.conn, _KERNEL_INDEX_SMC,
-            ctypes.byref(inp2), ctypes.sizeof(inp2),
-            ctypes.byref(out2), ctypes.byref(out_sz2))
-        if kr != 0 or out2.result != 0:
-            return None
-        return dtype, bytes(out2.bytes[:size])
+        IOKit 层失败（连接失效，典型场景：睡眠唤醒）先重连一次再试；
+        SMC 层失败（key 不存在）是正常情况，不重连。
+        """
+        for attempt in range(2):
+            if not self.conn and not self._open():
+                return None
+            # 第一步：取 key 的信息（长度、类型）
+            inp = _SMCKeyData()
+            out = _SMCKeyData()
+            inp.key = _fourcc(key)
+            inp.data8 = _CMD_READ_KEYINFO
+            out_sz = ctypes.c_size_t(ctypes.sizeof(out))
+            kr = _iokit.IOConnectCallStructMethod(
+                self.conn, _KERNEL_INDEX_SMC,
+                ctypes.byref(inp), ctypes.sizeof(inp),
+                ctypes.byref(out), ctypes.byref(out_sz))
+            if kr != 0:
+                if attempt == 0:
+                    self._reopen()
+                    continue
+                return None
+            if out.result != 0:
+                return None
+            size = out.keyInfo.dataSize
+            if not 1 <= size <= 32:
+                return None
+            dtype = out.keyInfo.dataType.to_bytes(4, "big").decode("ascii", "replace")
+
+            # 第二步：读数据
+            inp2 = _SMCKeyData()
+            out2 = _SMCKeyData()
+            inp2.key = _fourcc(key)
+            inp2.keyInfo.dataSize = size
+            inp2.data8 = _CMD_READ_BYTES
+            out_sz2 = ctypes.c_size_t(ctypes.sizeof(out2))
+            kr = _iokit.IOConnectCallStructMethod(
+                self.conn, _KERNEL_INDEX_SMC,
+                ctypes.byref(inp2), ctypes.sizeof(inp2),
+                ctypes.byref(out2), ctypes.byref(out_sz2))
+            if kr != 0:
+                if attempt == 0:
+                    self._reopen()
+                    continue
+                return None
+            if out2.result != 0:
+                return None
+            return dtype, bytes(out2.bytes[:size])
+        return None
 
 
 _smc = None
@@ -303,12 +322,25 @@ def _to_float(dtype, data, lo, hi):
     return None
 
 
+# 风扇 key：14 寸及以下是 F0Ac；16 寸双风扇机型第二把在 F1Ac。读得到哪把读哪把，
+# 取最大值（按最吵的那把判断）。单风扇机型读不到 F1Ac，自动跳过。
+FAN_KEYS = ("F0Ac", "F1Ac")
+
+
 def read_fan_rpm():
-    """当前风扇转速 (rpm)。停转返回 0.0；读不到返回 None。"""
-    r = _get_smc().read("F0Ac")
-    if r is None:
+    """当前风扇转速 (rpm)，多风扇取最大。停转返回 0.0；一把都读不到返回 None。"""
+    vals = []
+    smc = _get_smc()
+    for key in FAN_KEYS:
+        r = smc.read(key)
+        if r is None:
+            continue
+        v = _to_float(r[0], r[1], 0.0, 20000.0)
+        if v is not None:
+            vals.append(v)
+    if not vals:
         return None
-    return _to_float(r[0], r[1], 0.0, 20000.0)
+    return max(vals)
 
 
 def read_fan_limits():
@@ -381,14 +413,13 @@ def sample_once():
     print("CPU 温度: %s（%d 个传感器）" % (fmt(temp, "°C"), count))
     print("CPU 占用: %s" % fmt(cpu, "%"))
     print("当前低电量模式: %s" % lpm)
+    if fan is None:
+        print("⚠ 风扇转速读不到：本工具无法工作（SMC key %s 不可用）" % "/".join(FAN_KEYS))
     print("触发条件: 风扇 >= %.0f rpm 持续 %ds；恢复: 风扇 <= %.0f rpm 且 CPU <= %.0f%% 持续 %ds"
           % (FAN_TRIGGER, TRIGGER_SUSTAIN, FAN_RECOVER, CPU_RECOVER, RECOVER_SUSTAIN))
     # 版本放在最后一行：前面几行是数据，按行取值的东西（如 README 里的 head -1）不该被它挤掉
     print("版本: mac-not-jet v%s" % VERSION)
-    if fan is None:
-        print("⚠ 风扇转速读不到：本工具无法工作（SMC key F0Ac 不可用）")
-        return 1
-    return 0
+    return 1 if fan is None else 0
 
 
 def main():
@@ -399,6 +430,9 @@ def main():
     trig_start = None      # 触发条件连续满足的起始时刻
     rec_start = None       # 恢复条件连续满足的起始时刻
     lpm_since = None
+    lpm_ours = False       # 当前低电量模式是否由本工具开启（不是就不代为关闭）
+    manual_until = 0.0     # 用户手动关闭低电量模式后的豁免期截止时刻
+    fail_streak = 0        # 风扇读数连续失败轮数（连续太久就退出，靠 launchd 重启自愈）
     last_beat = 0.0
     last_warn = 0.0        # 上次读数失败告警时刻
     last_lpm_check = 0.0   # 上次核对实际 LPM 开关时刻
@@ -423,7 +457,7 @@ def main():
     if get_lpm():
         state = "lpm"
         lpm_since = time.time()
-        log("启动时检测到低电量模式已开启，按 lpm 状态接管")
+        log("启动时检测到低电量模式已开启（非本工具所开），仅监视，不会代为关闭")
 
     read_cpu_usage()          # 建立 CPU tick 基线，避免首轮读数缺失误告警
     time.sleep(0.5)
@@ -440,18 +474,25 @@ def main():
 
         now = time.time()
         if fan is None:
-            # 风扇读数失败：既不触发也不恢复（fail-safe），限频告警
+            # 风扇读数失败：既不触发也不恢复（fail-safe），限频告警；
+            # 连续失败太久说明连接彻底失效，退出让 launchd 拉起新进程（重连 SMC）
+            fail_streak += 1
+            if fail_streak >= 20:
+                log("连续 %d 轮读不到风扇转速，SMC 连接疑似失效，退出由 launchd 重启自愈"
+                    % fail_streak)
+                return 1
             if now - last_warn >= WARN_INTERVAL:
                 last_warn = now
-                log("警告: 风扇转速读不到（SMC F0Ac），本轮跳过")
+                log("警告: 风扇转速读不到（SMC %s），本轮跳过" % "/".join(FAN_KEYS))
             time.sleep(TICK)
             continue
+        fail_streak = 0
         last_warn = 0.0
         loud = fan >= FAN_TRIGGER     # 吵：到了触发线
         quiet = fan <= FAN_RECOVER    # 安静：回落到最低档附近
 
         if state == "normal":
-            if loud:
+            if loud and now >= manual_until:
                 if trig_start is None:
                     trig_start = now
                     log("风扇升到 %.0f rpm（触发线 %.0f），开始计时" % (
@@ -463,6 +504,7 @@ def main():
                         now - trig_start, fan, fmt(temp, "°C")))
                     if set_lpm(True):
                         state = "lpm"
+                        lpm_ours = True
                         lpm_since = now
                         trig_start = None
                     else:
@@ -473,12 +515,15 @@ def main():
                 trig_start = None
         else:  # lpm
             # 防卡死：若用户已手动关闭低电量模式，立即回到 normal 状态，
-            # 否则机器仍热时恢复条件永不满足，守护进程会永久卡在 lpm 分支
+            # 且一段时间内不再自动切换（否则会和用户手动操作打架）
             if now - last_lpm_check >= LPM_CHECK_INTERVAL:
                 last_lpm_check = now
                 if get_lpm() is False:
-                    log("检测到低电量模式被手动关闭，回到 normal 状态")
+                    log("检测到低电量模式被手动关闭，回到 normal 状态"
+                        "（%d 分钟内不自动切换）" % (MANUAL_OVERRIDE_S // 60))
                     state = "normal"
+                    lpm_ours = False
+                    manual_until = now + MANUAL_OVERRIDE_S
                     trig_start = None
                     rec_start = None
                     time.sleep(TICK)
@@ -491,18 +536,30 @@ def main():
                     log("风扇回落到 %.0f rpm 且 CPU %s，开始计时恢复" % (
                         fan, fmt(cpu, "%")))
                 elif now - rec_start >= RECOVER_SUSTAIN:
-                    if get_lpm():
-                        if set_lpm(False):
-                            log("☆ 已持续回落，恢复正常模式")
-                        else:
-                            log("错误: pmset 恢复失败，下轮重试（保持 lpm 状态）")
-                            rec_start = now - RECOVER_SUSTAIN + TICK
-                            continue
+                    lpm_state = get_lpm()
+                    if lpm_state is None:
+                        # 读不到状态：既不当「已关」也不当「还开」，重新计时稍后再查
+                        log("警告: 读不到低电量模式状态，稍后重试恢复")
+                        rec_start = now
                     else:
-                        log("检测到低电量模式已被手动关闭，仅重置内部状态")
-                    state = "normal"
-                    trig_start = None
-                    rec_start = None
+                        if not lpm_ours:
+                            log("低电量模式非本工具开启，不代为关闭，仅退出接管")
+                        elif lpm_state:
+                            if set_lpm(False):
+                                log("☆ 已持续回落，恢复正常模式")
+                            else:
+                                log("错误: pmset 恢复失败，%d 秒后重试（保持 lpm 状态）"
+                                    % LPM_FAIL_BACKOFF)
+                                last_lpm_fail = now
+                                rec_start = now   # 重新走满计时时长，兼作重试间隔
+                                continue
+                        else:
+                            log("检测到低电量模式已被手动关闭，仅重置内部状态")
+                            manual_until = now + MANUAL_OVERRIDE_S
+                        state = "normal"
+                        lpm_ours = False
+                        trig_start = None
+                        rec_start = None
             else:
                 if rec_start is not None:
                     log("回落条件中断，重新计时")

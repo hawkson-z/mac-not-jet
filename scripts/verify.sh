@@ -66,7 +66,7 @@ if launchctl print "system/$LABEL" >/dev/null 2>&1; then
   fi
   # 版本核对：v0.3.0 起日志会写"触发: 风扇 >="
   if tail -50 /var/log/mac_not_jet.log 2>/dev/null | grep -q "触发: 风扇"; then
-    ok "运行中的是 v0.3.0（风扇触发）"
+    ok "运行中的是风扇触发版本（v0.3.x）"
   else
     info "日志里没有风扇触发记录——若刚更新过，重启服务：sudo launchctl kickstart -k system/$LABEL"
   fi

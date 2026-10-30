@@ -5,7 +5,7 @@
 #   不带参数 = 一直压到 Ctrl+C
 #
 # 注意：这会把风扇吹起来，请确认真想测再用。
-# 触发条件要求 CPU 整体 >= 95%，所以必须压满全部核心（单核只有 ~1/10）。
+# 触发条件是风扇转速 >= 4000 rpm 持续 5s，所以要把全部核心压满（单核压不起风扇）。
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PY=${PYTHON:-/usr/bin/python3}
@@ -27,8 +27,8 @@ trap cleanup INT TERM EXIT
 printf "mac-not-jet 压测\n"
 printf -- "--------------------------------------------------\n"
 printf "核心数: %s（将启动同数量的 yes 进程）\n" "$NCPU"
-printf "触发线: CPU>=95%% 且 热压力>=Moderate，持续 30s\n"
-printf "打印间隔: 10s    预期: 30~60s 内切到低电量模式\n"
+printf "触发线: 风扇>=4000 rpm，持续 5s\n"
+printf "打印间隔: 10s    预期: 风扇过线后 ~10s 内切到低电量模式\n"
 printf -- "--------------------------------------------------\n"
 [ -r "$LOGFILE" ] || printf "提示: 读不到 $LOGFILE（改用 sudo 跑可看完整日志）\n"
 
