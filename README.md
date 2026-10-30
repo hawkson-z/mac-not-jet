@@ -4,8 +4,6 @@
 
 买的是 Pro、用得像 Air（日常轻载、烦风扇噪音、不需要峰值性能）的人，就是它的目标用户。
 
-> **当前 v0.3.0，试验阶段。** 「风扇吵起来 → 降频 → 安静 → 自动恢复」这一整轮还没有在真机上跑通验证，所以版本号停在 0.x。实测确认有效之后才标成 v1.0.0。
-
 ---
 
 ## 中文
@@ -134,8 +132,6 @@ tail -f /var/log/mac_not_jet.log
 **Don't let your Mac be a jet.** A tiny daemon for Apple Silicon MacBooks: when the fan spins up past a threshold for a few seconds, switch to **Low Power Mode** (the CPU throttles, the temperature drops, the fan goes quiet); switch back once it's quiet again.
 
 If you own a MacBook Pro but work like it's an Air (light tasks, hate fan noise, don't need peak performance), this is for you.
-
-> **v0.3.0, experimental.** The full cycle — fan spins up, throttles, goes quiet, recovers — has not been verified end to end on real hardware yet, hence the 0.x version. It becomes v1.0.0 only once that actually works.
 
 ### How it works
 
