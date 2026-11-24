@@ -12,6 +12,15 @@ mac-not-jet — 风扇一转，就把 CPU 按下去
   注意用「回落到低档」而非「停转」判恢复：这台机器的风扇最低转速约
   2317 rpm，触发降频后它不会回到 0，按停转判定会导致永不恢复。
 
+只在交流电供电时动作:
+  切换写的是 pmset -c（接电源时的那一档），不碰 pmset -b（电池时的那一档）。
+  两个原因:
+    1. -a / -b 写一次就会抹掉系统设置里「始终 / 仅使用电池时 / 从不」的三档偏好
+    2. 用户在电池供电时通常要满性能跑任务，不希望被降频；
+       电池供电本身固件就会限速，工具再叠一层低电量模式是帮倒忙。
+  拔电时若此前是本工具在插电状态下开的低电量模式，会把插电档撤销掉，
+  免得用户插电回来时莫名其妙又是低电量模式。
+
 采样策略（每 TICK 秒一次，守护进程自身开销接近零）:
   风扇转速:     SMC key F0Ac，经 IOKit 直接读取。免 root、无子进程、微秒级
   CPU 占用率:   Mach host_processor_info 系统调用，微秒级，无子进程
@@ -35,6 +44,9 @@ mac-not-jet — 风扇一转，就把 CPU 按下去
           热压力路线整体废弃（实测满载时仍为 Nominal，永远不触发）。
   v0.3.1  修缺陷：SMC 连接失效后自动重连（睡眠唤醒场景）、恢复分支把读数失败
           误当「用户已手动关闭」、与用户手动开关低电量模式打架、双风扇机型支持。
+  v0.4.0  只在交流电供电时动作，切换写 pmset -c（插电档）而不是 -a（所有档）。
+          -a/-b 写一次就会抹掉系统设置里「始终 / 仅使用电池时 / 从不」的三档偏好，
+          且电池供电时用户往往要满性能跑任务，不该被降频。
 
 版本号约定:
   在真机上跑通完整一轮「吵起来 → 降频 → 安静 → 恢复」并确认有效之前，只发 0.x。
@@ -48,7 +60,7 @@ import sys
 import time
 from datetime import datetime
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 # ===== 可调参数 =====
 FAN_TRIGGER = 4000.0          # 触发转速 (rpm)。实测噪声（14 寸 M5）：2500 rpm ≈ 25 dB(A)
@@ -383,15 +395,75 @@ def get_lpm():
     return bool(int(m.group(1))) if m else None
 
 
+def current_power_source():
+    """当前供电方式：'ac'（接电源）/ 'battery'（电池）/ None（读不到）。"""
+    try:
+        out = subprocess.run([PMSET, "-g", "batt"], capture_output=True, text=True,
+                             timeout=10).stdout
+    except Exception:
+        return None
+    if "AC Power" in out:
+        return "ac"
+    if "Battery Power" in out:
+        return "battery"
+    return None
+
+
+def _write_ac_lowpower(on):
+    """只写「接电源时」的低电量模式档位，不动电池档。"""
+    subprocess.run([PMSET, "-c", "lowpowermode", "1" if on else "0"], check=False)
+
+
 def set_lpm(on):
-    """切换低电量模式并核实结果。pmset 写偏好不保证立刻可读，故重试几次。"""
+    """在交流电下切换低电量模式并核实结果。
+
+    只写 pmset -c（插电档），不碰 -b（电池档）：
+    -a/-b 写一次就会抹掉系统设置里「始终 / 仅使用电池时 / 从不」的三档偏好。
+
+    核实读的是 pmset -g 的「当前生效值」——在交流电下它就是插电档，读数准确。
+    pmset 写偏好不保证立刻可读，故重试几次。
+    """
     for _ in range(3):
-        subprocess.run([PMSET, "-a", "lowpowermode", "1" if on else "0"],
-                       check=False)
+        _write_ac_lowpower(on)
         time.sleep(0.25)
         if get_lpm() == on:
             return True
     return False
+
+
+def restore_lpm(saved):
+    """把插电档写回切换前的原值，而不是硬写 0。
+
+    这样用户在系统设置里的偏好（始终 / 仅使用电池时 / 从不）原样保留，
+    工具只是临时借用了一下这个档位。
+    """
+    target = bool(saved)
+    for _ in range(3):
+        _write_ac_lowpower(target)
+        time.sleep(0.25)
+        if get_lpm() == target:
+            return True
+    return False
+
+
+def apply_power_policy(src, state, lpm_ours, ac_saved):
+    """非交流电供电时的处理：撤销本工具在插电档的设置，回到 normal。
+
+    返回 (state, lpm_ours, ac_saved, msg)；msg 为 None 表示无需动作。
+    撤销时写回切换前的原值而不是 0——插电档留着 1 的话，
+    用户插电回来会被莫名其妙降频一次；写回原值则偏好无损。
+    """
+    if src == "ac" or state != "lpm":
+        return state, lpm_ours, ac_saved, None
+    if lpm_ours:
+        _write_ac_lowpower(ac_saved)
+        msg = ("已切到电池供电：插电档的低电量模式已恢复原值，"
+               "电池供电期间工具不干预")
+    elif src == "battery":
+        msg = "已切到电池供电：低电量模式由系统设置控制，工具不干预"
+    else:
+        msg = ("读不到供电状态，按电池处理：插电档的低电量模式已恢复原值")
+    return "normal", False, None, msg
 
 
 def fmt(v, unit, digits=1):
@@ -431,6 +503,7 @@ def main():
     rec_start = None       # 恢复条件连续满足的起始时刻
     lpm_since = None
     lpm_ours = False       # 当前低电量模式是否由本工具开启（不是就不代为关闭）
+    ac_saved = None        # 本工具切换前，插电档的原值（恢复时写回它）
     manual_until = 0.0     # 用户手动关闭低电量模式后的豁免期截止时刻
     fail_streak = 0        # 风扇读数连续失败轮数（连续太久就退出，靠 launchd 重启自愈）
     last_beat = 0.0
@@ -449,6 +522,8 @@ def main():
         "持续 %ds（最短保持 %ds）；采样间隔 %ds" % (
             VERSION, FAN_TRIGGER, TRIGGER_SUSTAIN, FAN_RECOVER, CPU_RECOVER,
             RECOVER_SUSTAIN, MIN_HOLD, TICK))
+    log("只在交流电供电时动作（写插电档 pmset -c，不动电池档；"
+        "电池供电时不触发、不恢复）")
     log("启动自检通过：风扇 %s（最低 %s / 最高 %s），温度 %s（%d 个传感器）" % (
         fmt(fan, " rpm", 0), fmt(fan_min, " rpm", 0), fmt(fan_max, " rpm", 0),
         fmt(temp, "°C"), count))
@@ -491,8 +566,22 @@ def main():
         loud = fan >= FAN_TRIGGER     # 吵：到了触发线
         quiet = fan <= FAN_RECOVER    # 安静：回落到最低档附近
 
+        # 供电方式：只在交流电下动作
+        src = current_power_source()
+        state, lpm_ours, ac_saved, msg = apply_power_policy(
+            src, state, lpm_ours, ac_saved)
+        if msg:
+            log(msg)
+            trig_start = None
+            rec_start = None
+            lpm_since = None
+
         if state == "normal":
-            if loud and now >= manual_until:
+            if src != "ac":
+                # 电池供电：不触发。用户可能要满性能跑任务，
+                # 而且电池供电时固件本身就在限速，再叠一层低电量模式是帮倒忙。
+                trig_start = None
+            elif loud and now >= manual_until:
                 if trig_start is None:
                     trig_start = now
                     log("风扇升到 %.0f rpm（触发线 %.0f），开始计时" % (
@@ -502,9 +591,11 @@ def main():
                     temp, count = read_temps()
                     log("★ 风扇持续 %.0fs 在 %.0f rpm（%s），切换低电量模式" % (
                         now - trig_start, fan, fmt(temp, "°C")))
+                    saved = get_lpm()      # 记下插电档原值，恢复时写回它
                     if set_lpm(True):
                         state = "lpm"
                         lpm_ours = True
+                        ac_saved = saved
                         lpm_since = now
                         trig_start = None
                     else:
@@ -545,7 +636,7 @@ def main():
                         if not lpm_ours:
                             log("低电量模式非本工具开启，不代为关闭，仅退出接管")
                         elif lpm_state:
-                            if set_lpm(False):
+                            if restore_lpm(ac_saved):
                                 log("☆ 已持续回落，恢复正常模式")
                             else:
                                 log("错误: pmset 恢复失败，%d 秒后重试（保持 lpm 状态）"
@@ -558,6 +649,7 @@ def main():
                             manual_until = now + MANUAL_OVERRIDE_S
                         state = "normal"
                         lpm_ours = False
+                        ac_saved = None
                         trig_start = None
                         rec_start = None
             else:
@@ -568,8 +660,9 @@ def main():
         if now - last_beat >= HEARTBEAT:
             last_beat = now
             temp, count = read_temps()
-            log("心跳: 状态=%s 风扇=%s 温度=%s cpu=%s" % (
-                state, fmt(fan, " rpm", 0), fmt(temp, "°C"), fmt(cpu, "%")))
+            log("心跳: 状态=%s 电源=%s 风扇=%s 温度=%s cpu=%s" % (
+                state, "AC" if src == "ac" else ("电池" if src == "battery" else "?"),
+                fmt(fan, " rpm", 0), fmt(temp, "°C"), fmt(cpu, "%")))
 
         elapsed = time.time() - t0
         if elapsed < TICK:

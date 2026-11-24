@@ -123,6 +123,7 @@ tail -f /var/log/mac_not_jet.log
 - 温度 key 列表按 Apple Silicon 各代（M1–M5）列了一遍，读不到的自动跳过。Intel Mac 的风扇也能读，但温度 key 不同，未适配。
 - 双风扇机型（16 寸 MBP）两把风扇（F0Ac/F1Ac）都读，按较吵的那把判断；单风扇机型读不到 F1Ac 会自动跳过。
 - 你手动关掉低电量模式后，守护进程 30 分钟内不会自动再开（避免和你的手动操作打架）；反过来，它也不会关掉不是自己开的低电量模式。
+- **只在交流电供电时动作。** 切换写的是「接电源时」那一档（`pmset -c`），不碰电池档；恢复时写回切换前的原值，所以系统设置里的「始终 / 仅使用电池时 / 从不」三档偏好原样保留。电池供电时工具完全不干预——电池供电本身固件就在限速，你要满性能跑任务时它不该插手。拔电时它会把自己在插电档上的改动撤掉。
 - 阈值是按「风扇声音」而不是「温度」定的，每台机器散热曲线不同，务必按上面的方法自己调一次。
 - 守护进程退出时**有意不**恢复低电量模式——机器保持在当前状态，不做多余动作。
 
@@ -272,6 +273,7 @@ After editing, reinstall (`sudo ./install.sh` copies the script) to apply.
 - The temperature key list covers Apple Silicon generations M1–M5 (unreadable keys are skipped). Intel fans can be read too, but the temperature keys differ and aren't mapped.
 - Dual-fan machines (16" MBP) read both fans (F0Ac/F1Ac) and judge by the louder one; single-fan machines simply skip the missing key.
 - If you turn Low Power Mode off manually, the daemon won't turn it back on for 30 minutes (no fighting your manual change). Conversely, it never turns off a Low Power Mode it didn't switch on itself.
+- **It only acts on AC power.** Switching writes the *power adapter* profile (`pmset -c`) and never the battery profile; on restore it writes back the value that was there before, so your system preference (Always / Only on Battery / Never) survives untouched. On battery power the daemon does nothing at all — the OS already caps performance on battery, and it shouldn't interfere when you want full speed. Unplugging makes it undo its own change to the AC profile.
 - Thresholds are derived from *fan noise*, not temperature; cooling curves differ per machine, so tune it once as described above.
 - The daemon intentionally does **not** restore Low Power Mode on exit — it leaves the machine in its current state.
 
